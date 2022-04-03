@@ -1,15 +1,20 @@
 import datetime
 import hashlib
 import json
+import requests
 # Install these libraries with pip3 install:
 from flask import Flask, jsonify
 from flask_ngrok import run_with_ngrok
+from uuid import uuid4
+from urllib.parse import urlparse
 
 class Blockchain:
     def __init__(self):
         self.chain = []
+        self.transactions = []
         # Genesis block
         self.create_block(proof = 1, previous_hash = '0')
+        self.nodes = set()
     
     def create_block(self, proof, previous_hash):
         # Create a new block and add it to the chain
@@ -18,7 +23,10 @@ class Blockchain:
         block = {'index': len(self.chain) + 1,
                  'timestamp': str(datetime.datetime.now()),
                  'proof': proof,
-                 'previous_hash': previous_hash}
+                 'previous_hash': previous_hash,
+                 'transactions' : self.transactions}
+        
+        self.transactions = []
         self.chain.append(block)
         return block
     
@@ -42,6 +50,7 @@ class Blockchain:
     def hash(self, block):
         # Hash a block
         encoded_block = json.dumps(block, sort_keys = True).encode()
+        
         return hashlib.sha256(encoded_block).hexdigest()
     
     def is_chain_valid(self, chain):
@@ -60,5 +69,130 @@ class Blockchain:
             previous_block = block
             block_index += 1
         return True
+
+    def add_transaction(self, sender, receiver, amount):
+        # Add a new transaction to the blockchain
+        # sender: address of the sender
+        # receiver: address of the receiver
+        # amount: amount of coins sent
+        # Transaction structure:
+        self.transactions.append({'sender': sender,
+                                    'receiver': receiver,
+                                    'amount': amount})
+        previous_block = self.get_previous_block()
+        return previous_block['index'] + 1
+    
+    def add_node(self, address):
+        # Add a new node to the blockchain
+        # address: address of the node
+        parsed_url = urlparse(address)
+        self.nodes.add(address)
+    
+    def replace_chain(self):
+        network = self.nodes
+        longest_chain = None
+        max_length = len(self.chain)
+        for node in network:
+            response = requests.get(f'http://{node}/get_chain')
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+                if length > max_length and self.is_chain_valid(chain):
+                    max_length = length
+                    longest_chain = chain
+        if longest_chain:
+            self.chain = longest_chain
+            return True
+        return False
+    
+
+
+
+app = Flask(__name__)
+# Commend this if you're going to deploy in localhost
+run_with_ngrok(app)
+
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+
+# Create the node adress in port 5000
+node_address = str(uuid4()).replace('-', '')
+
+# Create the blockchain and add the genesis block
+blockchain = Blockchain()
+@app.route('/mine_block', methods = ['GET'])
+def mine_block():
+    # Mine a new block
+    previous_block = blockchain.get_previous_block()
+    previous_proof = previous_block['proof']
+    proof = blockchain.proof_of_work(previous_proof)
+    previous_hash = blockchain.hash(previous_block)
+    # You can set a transaction for everytime a block has been mined
+    blockchain.add_transaction(sender = node_address, receiver = 'Sergio', amount = 1)
+    block = blockchain.create_block(proof, previous_hash)
+    response = {'message': 'Congratulations, you just mined a block!',
+                'index': block['index'],
+                'timestamp': block['timestamp'],
+                'proof': block['proof'],
+                'previous_hash': block['previous_hash'],
+                'transactions': block['transactions']}
+    return jsonify(response), 200
+@app.route('/get_chain', methods = ['GET'])
+def get_chain():
+    # Return the blockchain
+    response = {'chain': blockchain.chain,
+                'length': len(blockchain.chain)}
+    return jsonify(response), 200
+
+@app.route('/is_valid', methods = ['GET'])
+def is_valid():
+    # Check if the blockchain is valid
+    is_valid = blockchain.is_chain_valid(blockchain.chain)
+    if is_valid:
+        response = {'message': 'All good. The blockchain is valid.'}
+    else:
+        response = {'message': 'Houston, we have a problem. The blockchain is not valid.'}
+    return jsonify(response), 200
+
+
+ # Add a new transaction to the blockchain
+@app.route('/add_transaction', methods = ['POST'])
+def add_transaction():
+  json = requests.get_json()
+  transaction_keys = ['sender', 'receiver', 'amount']
+  if not all(key in json for key in transaction_keys):
+      return 'Some values are missing', 400
+  index = blockchain.add_transaction(json['sender'], json['receiver'], json['amount'])
+  response = {'message': f'Transaction confirmed, is going to be added in  {index}'}
+  return jsonify(response), 201
+    
+# Decentralization of the blockchian
+
+# Connect new nodes
+@app.route('/connect_node', methods = ['POST'])
+def connect_node():
+  json = requests.get_json()
+  nodes = json.get('nodes')
+  if nodes is None: 
+      return 'There is no node to add', 400
+  for node in nodes:
+      blockchain.add_node(node)
+  response = {'message'     : 'All the nodes are connected. The Blockchain has the following nodes: ',
+              'total_nodes' : list(blockchain.nodes)}
+  return jsonify(response), 201
+
+@app.route('/replace_chain', methods = ['GET'])
+def replace_chain():
+  # Replace the chain by the longest chain if needed
+
+  is_chain_replaced = blockchain.replace_chain()
+  if is_chain_replaced:
+      response = {'message' : 'The nodes have different chains, it has been replaced by the longest Blockchain.',
+                  'new_chain': blockchain.chain}
+  else:
+      response = {'message'       : 'Everything Ok. The Blockchain is the longest one.',
+                  'actual_chain'  : blockchain.chain}
+  return jsonify(response), 200  
+
+
 
     
